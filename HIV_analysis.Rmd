@@ -1,0 +1,1085 @@
+---
+title: "Exploratory Analysis of SAHA vs DMSO Gene Expression Dataset"
+authors: "Luis Carlos Ospina, Pau Ribera and Nicolás Costa"
+output: html_document
+---
+
+**Authors:** Luis Carlos Ospina, Pau Ribera and Nicolás Costa
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("tidyverse")
+#install.packages("factoextra")  
+
+library(tidyverse) # this package is very useful, since only loading this, we load a collection of packages used for data analysis: ggplot2 (plots), dplyr and tidyr (data wrangling), readr (read files), stringr (text), forcats (factors), and tibble (modern data frames)
+library(plotly) # to make interactive plots
+library(Rtsne) # this loads the Rtsne package for dimensionality reduction
+library(ggpubr) # to arrange plots with a shared legend
+library(factoextra) # to visualize the percentage of variance explained by each principal component
+library(reshape2) # this reshapes the data to long format
+library(uwot) # for UMAP dimensionality reduction
+
+```
+
+## Introduction
+
+In this analysis, we explore gene expression changes in HIV-infected and non-infected cell lines treated with SAHA, PMA, and DMSO. The aim is to apply dimensionality reduction techniques (PCA and tSNE) to visualize and understand the biological variability and potential batch effects in the dataset. This initial exploratory step will inform downstream differential expression analysis and biological interpretation.
+
+
+## QUESTION 1: Load, adapt the data and create metadata
+
+### Reusable functions {.tabset}
+
+#### Run PCA and create a dataframe
+```{r, cache=TRUE}
+
+
+# this reusable function runs PCA and returns a dataframe with metadata
+run_pca_with_metadata <- function(expr_matrix, metadata_df,BOOL_scale) {
+  pca_result <- prcomp(expr_matrix, center = TRUE, scale. = BOOL_scale)
+  pca_df <- as.data.frame(pca_result$x)
+  combined_df <- cbind(pca_df, metadata_df[, c("sample", "cell_type", "treatment", "replicate")])
+  return(combined_df)
+}
+
+
+```
+
+#### Plot a PCA dataframe
+```{r, cache=TRUE}
+
+# this reusable function plots a PCA dataframe
+plot_pca_reduction <- function(df, x_col = "PC1", y_col = "PC2", title = "", shape_by = "replicate", alpha = 0.8) {
+  ggplot(df, aes_string(x = x_col, y = y_col, color = "treatment", shape = shape_by)) +
+    geom_point(size = 2, alpha = alpha) +
+    scale_shape_manual(values = c("rep1" = 3, "rep2" = 16, "rep3" = 12,
+                                  "J-LatA2" = 3, "Jurkat" = 16)) +
+    theme_minimal() +
+    labs(title = title, x = x_col, y = y_col)
+}
+```
+
+#### Run t-SNE with Metadata
+```{r, cache=TRUE}
+
+# this reusable function runs tSNE and returns a dataframe with metadata
+run_tsne_with_metadata <- function(expr_matrix, metadata_df, perplexity = 30, max_iter = 1000, seed = 42) {
+  set.seed(seed)
+  tsne_result <- Rtsne(as.matrix(expr_matrix), dims = 2, perplexity = perplexity, max_iter = max_iter)
+  tsne_df <- data.frame(tsne_result$Y)
+  result <- cbind(tsne_df, metadata_df[, c("sample", "cell_type", "treatment", "replicate")])
+  return(result)
+}
+```
+
+#### Plot a tSNE
+```{r, cache=TRUE}
+
+
+# this reusable function plots a tSNE dataframe
+plot_tsne_reduction <- function(df, x_col = "X1", y_col = "X2", title = "", shape_by = "cell_type", alpha = 0.8) {
+  ggplot(df, aes_string(x = x_col, y = y_col, color = "treatment", shape = shape_by)) +
+    geom_point(size = 2, alpha = alpha) +
+    scale_shape_manual(values = c("rep1" = 3, "rep2" = 16, "rep3" = 12,
+                                  "J-LatA2" = 3, "Jurkat" = 16)) +
+    theme_minimal() +
+    labs(title = title, x = x_col, y = y_col)
+}
+
+
+```
+
+#### Run and plot t-SNE
+```{r, cache=TRUE}
+
+# this is a function to run and plot tSNE with a given parameter
+run_and_plot_tsne <- function(expr, metadata, perplexity = 30, max_iter = 1000, seed = 42, title_suffix = "") {
+  df <- run_tsne_with_metadata(expr, metadata, perplexity = perplexity, max_iter = max_iter, seed = seed)
+  plot_tsne_reduction(df, title = title_suffix, shape_by = "replicate")
+}
+
+```
+
+#### Run and plot a tSNE
+```{r, cache=TRUE}
+
+# this is a function to run and plot tSNE with a given parameter
+run_and_plot_tsne <- function(expr, metadata, perplexity = 30, max_iter = 1000, seed = 42, title_suffix = "") {
+  df <- run_tsne_with_metadata(expr, metadata, perplexity = perplexity, max_iter = max_iter, seed = seed)
+  plot_tsne_reduction(df, title = title_suffix)
+}
+
+```  
+
+
+#### Project new data onto a pre-trained UMAP model
+```{r, cache=TRUE}
+# this reusable function projects new data onto a pre-trained UMAP model
+project_umap <- function(train_expr, test_expr, metadata_train, metadata_test,
+                         n_neighbors = 15, min_dist = 0.1, metric = "euclidean", seed = 42) {
+  set.seed(seed)
+  
+  # fit UMAP on training data
+  umap_model <- umap(as.matrix(train_expr),
+                     n_neighbors = n_neighbors,
+                     min_dist = min_dist,
+                     metric = metric,
+                     n_components = 2,
+                     ret_model = TRUE)
+  
+  # embed the training data
+  umap_train <- data.frame(umap_model$embedding)
+  colnames(umap_train) <- c("UMAP1", "UMAP2")
+  umap_train$set <- "train"
+  train_combined <- cbind(umap_train, metadata_train)
+  
+  # project the test data
+  umap_test <- data.frame(umap_transform(as.matrix(test_expr), umap_model))
+  colnames(umap_test) <- c("UMAP1", "UMAP2")
+  umap_test$set <- "test"
+  test_combined <- cbind(umap_test, metadata_test)
+  
+  # merge
+  final <- rbind(train_combined, test_combined)
+  return(final)
+}
+
+```
+
+
+#### Run UMAP with Metadata
+```{r, cache=TRUE}
+
+# this reusable function runs UMAP and returns a dataframe with metadata
+run_umap_with_metadata <- function(expr_matrix, metadata_df, n_neighbors = 15, min_dist = 0.1, metric = "euclidean", seed = 42) {
+  set.seed(seed)
+  
+  umap_result <- umap(as.matrix(expr_matrix), n_neighbors = n_neighbors, min_dist = min_dist, metric = metric, n_components = 2)
+  
+  umap_df <- data.frame(UMAP1 = umap_result[,1], UMAP2 = umap_result[,2])
+  combined_df <- cbind(umap_df, metadata_df[, c("sample", "cell_type", "treatment", "replicate")])
+  return(combined_df)
+}
+
+```
+
+#### Plot a UMAP dataframe
+```{r, cache=TRUE}
+
+# this reusable function plots a UMAP dataframe
+plot_umap_reduction <- function(df, x_col = "UMAP1", y_col = "UMAP2", title = "", shape_by = "cell_type", alpha = 0.8) {
+  ggplot(df, aes_string(x = x_col, y = y_col, color = "treatment", shape = shape_by)) +
+    geom_point(size = 2, alpha = alpha) +
+    scale_shape_manual(values = c("rep1" = 3, "rep2" = 16, "rep3" = 12,
+                                  "J-LatA2" = 3, "Jurkat" = 16,
+                                  "train" = 16, "test" = 3)) +
+    theme_minimal() +
+    labs(title = title, x = x_col, y = y_col)
+}
+```
+
+#### Run and plot a UMAP
+```{r, cache=TRUE}
+
+# this function runs UMAP and returns the plot
+run_and_plot_umap <- function(expr, metadata, n_neighbors = 15, min_dist = 0.1, metric = "euclidean", title_suffix = "", shape_by = "replicate") {
+  df <- run_umap_with_metadata(expr, metadata, n_neighbors = n_neighbors, min_dist = min_dist, metric = metric)
+  plot_umap_reduction(df, title = paste("UMAP -", title_suffix), shape_by = shape_by)
+}
+
+```
+
+
+#### Generic plot for dimensionality reduction
+```{r, cache=TRUE}
+
+# this reusable function plots any dimensionality reduction result (PCA, tSNE, UMAP) shaping by cell type or replicate
+plot_dimred <- function(df, x = "PC1", y = "PC2", title = "", shape_by = "cell_type") {
+  shape_scale <- switch(shape_by,
+    "cell_type" = scale_shape_manual(values = c("J-LatA2" = 3, "Jurkat" = 16)),
+    "replicate" = scale_shape_manual(values = c("rep1" = 3, "rep2" = 16, "rep3" = 12)),
+    scale_shape_manual(values = NULL)  # fallback
+  )
+
+  ggplot(df, aes_string(x = x, y = y, color = "treatment", shape = shape_by)) +
+    geom_point(size = 2, alpha = 0.8) +
+    shape_scale +
+    theme_minimal() +
+    labs(title = title, x = x, y = y)
+}
+
+```
+
+
+
+
+## Data Loading and Preprocessing
+
+First, we load the raw counts matrix, where genes are rows and samples are columns.  
+We also load the metadata file, which contains information about each sample encoded in a single string.
+
+Next, we split the metadata string into separate columns: sample name, cell type, treatment group, and replicate number.
+
+We filter the metadata to keep only the samples present in the counts matrix, ensuring consistency.
+
+Then, we reorder the metadata to match the order of samples in the counts matrix.  
+This step is crucial for correct merging and analysis.
+
+Since the counts matrix has genes as rows and samples as columns, we transpose it to have samples as rows and genes as columns, which is the preferred format for most analyses.
+
+Finally, we merge the metadata with the transposed counts matrix by sample name, creating a combined dataset for downstream analysis.
+
+To check data balance, we plot the distribution of samples by treatment and cell type interactively.
+
+```{r, cache=TRUE}
+
+counts <- read.csv("counts.csv", row.names = 1)
+
+metadata_raw <- read.csv("sample_sheet.csv", header = FALSE, row.names = 1)
+
+metadata_raw
+
+
+colnames(metadata_raw) <- "info"
+
+
+metadata <- metadata_raw %>%
+  separate(info, into = c("sample", "cell_type", "treatment", "replicate"), sep = ";")
+
+
+metadata <- metadata %>%
+  filter(sample %in% colnames(counts))
+
+
+metadata <- metadata %>%
+  arrange(factor(sample, levels = colnames(counts)))
+
+
+
+
+counts_t <- as.data.frame(t(counts))
+
+counts_t$sample <- rownames(counts_t)
+
+final_data <- inner_join(metadata, counts_t, by = "sample") 
+
+g1 <- ggplot(metadata, aes(x = treatment, fill = cell_type)) +
+  geom_bar(position = "dodge") +
+  theme_minimal() +
+  labs(title = "Sample distribution by treatment and cell type",
+       x = "Treatment", y = "Number of samples")
+
+ggplotly(g1)
+
+```
+
+### Interpretation:
+
+The barplot shows the number of samples per treatment and cell type. We observe that J-LatA2 cells (HIV-infected) are more represented across all treatments, especially for PMA and SAHA. Jurkat cells (non-infected) are fewer but evenly distributed across treatments. This sample imbalance should be kept in mind for further analysis as it could introduce bias or batch effects in plots like PCA or tSNE.
+
+
+## QUESTION 2: PCA representation
+
+
+###  {.tabset}
+
+#### PCA on raw counts {.tabset}
+
+##### According to cell type
+
+```{r, cache=TRUE}
+
+
+expr_raw <- final_data %>%
+  select(-sample, -cell_type, -treatment, -replicate)
+
+
+# ALTERNATIVE:
+
+#expr_raw <- final_data %>%
+#  select(where(is.numeric))  # this automatically selects all gene columns
+
+# to run and plot PCA
+pca_df_raw <- run_pca_with_metadata(expr_raw, final_data, FALSE)
+plot_pca_reduction(pca_df_raw, title = "PCA on raw counts", shape_by = "cell_type")
+
+head(expr_raw)
+
+```
+
+
+##### According to replicate
+
+```{r, cache=TRUE}
+plot_pca_reduction(pca_df_raw, title = "PCA on raw counts")
+
+
+```
+
+
+#### PCA on normalized data {.tabset}
+
+##### According to cell type
+
+```{r, cache=TRUE}
+
+# PCA on scaled and normalized data:
+pca_df_scaled <- run_pca_with_metadata(expr_raw, final_data, TRUE)
+plot_pca_reduction(pca_df_scaled, title = "PCA on scaled data", shape_by = "cell_type")
+
+```
+
+
+##### According to replicate
+
+
+```{r, cache=TRUE}
+
+# PCA on scaled data:
+plot_pca_reduction(pca_df_scaled, title = "PCA on scaled data")
+```
+
+
+#### PCA on scaled normalized data {.tabset}
+
+##### According to replicate
+
+
+```{r, cache=TRUE}
+
+# to normalize each sample by its total expression (relative expression)
+norm_expr <- expr_raw/rowSums(expr_raw)
+
+
+pca_df_norm <- run_pca_with_metadata(norm_expr, final_data, TRUE)
+
+# PCA scaled and normalized
+plot_pca_reduction(pca_df_norm, "PC1", "PC2", title = "Scaled normalized data")
+
+```
+
+
+
+##### According to cell type
+
+
+```{r, cache=TRUE}
+plot_pca_reduction(pca_df_norm, "PC1", "PC2", title = "Raw data", shape_by = "cell_type")
+
+```
+
+
+#### Correlation computation {.tabset} 
+
+##### According to treatment {.tabset}
+
+###### According to normalized data
+
+```{r, cache=TRUE}
+
+
+# Correlation computation:
+
+summary(lm(PC1 ~ treatment, data = pca_df_norm))
+summary(lm(PC2 ~ treatment, data = pca_df_norm))
+
+```
+
+
+###### According to raw data
+
+```{r, cache=TRUE}
+
+
+summary(lm(PC1 ~ treatment, data = pca_df_raw))
+summary(lm(PC2 ~ treatment, data = pca_df_raw))
+
+```
+
+
+##### According to Cell type {.tabset}
+
+###### According to normalized data
+
+
+```{r, cache=TRUE}
+summary(lm(PC1 ~ cell_type, data = pca_df_norm))
+summary(lm(PC2 ~ cell_type, data = pca_df_norm))
+
+```
+
+
+###### According to raw data
+
+```{r, cache=TRUE}
+summary(lm(PC1 ~ cell_type, data = pca_df_raw))
+summary(lm(PC2 ~ cell_type, data = pca_df_raw))
+
+```
+
+
+##### According to Replicate {.tabset}
+
+###### According to normalized data
+
+
+```{r, cache=TRUE}
+summary(lm(PC1 ~ replicate, data = pca_df_norm))
+summary(lm(PC2 ~ replicate, data = pca_df_norm))
+
+```
+
+
+###### According to raw data
+
+```{r, cache=TRUE}
+summary(lm(PC1 ~ replicate, data = pca_df_raw))
+summary(lm(PC2 ~ replicate, data = pca_df_raw))
+
+```
+
+ 
+##### According to Total Expression {.tabset}
+
+###### According to normalized data 
+
+
+```{r, cache=TRUE}
+
+pca_df_norm$total_expression <- rowSums(expr_raw)
+summary(lm(PC1 ~ total_expression, data = pca_df_norm))
+summary(lm(PC2 ~ total_expression, data = pca_df_norm))
+```
+
+
+###### According to raw data 
+
+```{r, cache=TRUE}
+
+pca_df_raw$total_expression <- rowSums(expr_raw)
+summary(lm(PC1 ~ total_expression, data = pca_df_raw))
+summary(lm(PC2 ~ total_expression, data = pca_df_raw))
+
+```
+
+
+#### Batch effect 
+
+
+```{r, cache=TRUE}
+
+total_expression <- rowSums(expr_raw)
+
+# Define color palette for replicates (experiments)
+color_palette <- c("rep1" = "black", "rep2" = "red", "rep3" = "blue")  # customize as needed
+
+# Assign colors by replicate
+colors <- color_palette[metadata$replicate]
+
+# Plot
+plot(total_expression, 
+     type = "h", 
+     col = colors,
+     xlab = "Samples",
+     ylab = "Total Gene Expression",
+     main = "Total Gene Expression by Replicate")
+
+# Legend
+legend("topright", legend = names(color_palette), col = color_palette, pch = 15)
+
+
+```
+
+
+
+
+
+### PCA interpretation:
+
+In the initial principal component analysis (PCA) of the raw data, a pronounced batch effect was observed. Samples clustered primarily according to the replicate variable, indicating that technical variation was a dominant source of variation. This was visually evident in the PCA plots and further confirmed by the "Batch Effect" plot, which showed total gene expression levels varying systematically across replicates.
+
+Correlation analysis reinforced this observation. In the replicate-specific tab, the raw data showed a statistically significant relationship between replicate and both PCA axes. In particular, PC1 displayed extremely large coefficient values (e.g., -19,734.5 and -10,197.7), highlighting the strong influence of technical replicate effects.
+
+After normalization, the batch effect was substantially reduced. In the updated linear models, p-values became either non-significant or, when still significant, were associated with much smaller coefficients (e.g., 27.4 and 27.1). This confirmed that replicate-driven variability was greatly diminished, which is also reflected in the normalized PCA plots.
+
+Importantly, PC2 showed a very strong association with treatment, confirming that this component captures the main treatment-driven variability in gene expression. PC1 was also significantly associated with treatment, although to a lesser extent. Furthermore, PC2 reflects differences between Jurkat and J-LatA2 cells, suggesting it captures meaningful biological variation across cell types.
+
+In summary, PCA effectively captured both technical and biological sources of variability. PC1 primarily reflects treatment effects and a residual replicate influence, while PC2 clearly separates the data by both treatment and cell type. This supports the use of PCA as a meaningful tool for biological interpretation and confirms that normalization greatly improved the interpretability of the data by reducing batch effects and enhancing biological signal.
+
+## Additional PCA visualizations {.tabset}
+
+
+### Scree plot using factoextra
+
+```{r, cache=TRUE}
+
+# ADDITIONAL PLOT: A scree plot using factoextra
+
+# this visualizes the variance explained by each component using factoextra
+fviz_eig(prcomp(norm_expr, center = TRUE, scale. = FALSE), addlabels = TRUE, barfill = "steelblue", barcolor = "black") +
+  theme_minimal() +
+  labs(title = "Scree plot using factoextra")
+
+```
+
+#### Scree plot interpretation 
+
+The scree plot displays the percentage of variance explained by each principal component (PC). We observe that:
+
+    PC1 explains 33.8% of the total variance,
+
+    PC2 explains 14.9%, and
+
+    PC3 explains 10.2%.
+
+Together, the first three components capture nearly 59% of the total variance, indicating that a substantial amount of the structured variability in the dataset is concentrated in these first few components.
+
+This steep drop in explained variance between the first and subsequent components suggests a clear elbow point after PC3, meaning that additional components contribute progressively less meaningful information and are more likely to capture noise or minor variation.
+
+Despite the diminishing variance explained beyond the third component, the first two to three PCs are sufficient for capturing key patterns in the data, such as differences in treatment and cell type, as seen in corresponding PCA plots. This supports their use in data visualization and initial exploratory analysis.
+
+Overall, the scree plot confirms that most of the biologically relevant variation is concentrated in the first few principal components, justifying the focus on them for downstream interpretation.
+
+
+
+### PCA Biplot 
+```{r, cache=TRUE}
+
+# ADDITIONAL PLOTS: Biplots using factoextra
+
+# the biplot coloring by treatment
+fviz_pca_biplot(prcomp(norm_expr, center = TRUE, scale. = FALSE), 
+                geom.ind = "point", col.ind = final_data$treatment, 
+                palette = "jco", addEllipses = TRUE, 
+                label = "none") +
+  theme_minimal() +
+  labs(title = "PCA Biplot with Treatment Coloring")
+
+# the biplot coloring by cell type
+fviz_pca_biplot(prcomp(norm_expr, center = TRUE, scale. = FALSE),  
+                geom.ind = "point", col.ind = final_data$cell_type,  
+                palette = "jco", addEllipses = TRUE,  
+                label = "none") +
+  labs(title = "PCA Biplot with Cell Type Coloring")
+
+# and the biplot coloring by replicate
+fviz_pca_biplot(prcomp(norm_expr, center = TRUE, scale. = FALSE),  
+                geom.ind = "point", col.ind = final_data$replicate,  
+                palette = "jco", addEllipses = TRUE,  
+                label = "none") +
+  labs(title = "PCA Biplot with Replicate Coloring")
+
+```
+
+#### PCA Biplot interpretation
+
+To better understand the contribution of genes and the relationships between samples, we generated PCA biplots using scaled expression data. We colored the samples by treatment, cell type, and replicate to explore different sources of variability.
+
+We observed that treatment is a major driver of separation along PC2, as SAHA, PMA, and DMSO form well-defined clusters. This aligns with the linear model results showing a strong treatment effect on PC2. Cell type (J-LatA2 vs. Jurkat) shows moderate separation, primarily along PC1. This suggests that PC1 captures the variability between infected and non-infected cells. Replicates are not completely overlapping, indicating the presence of some batch effects, especially in PC1. However, the clusters remain tight within treatments, showing that the biological signal dominates.
+
+The arrows in the biplot represent genes that contribute most to PC1 and PC2. Their direction indicates which genes are more expressed in which sample groups. For example, arrows pointing towards SAHA suggest genes that are upregulated under that treatment. 
+
+
+
+
+
+### Interactive expression patterns of top 5 variable genes
+```{r, cache=TRUE}
+
+# this calculates the variance of each gene
+gene_variances <- apply(norm_expr, 2, var) # the "2" here is to apply the "var" function column by column
+
+# this selects the top 5 most variable genes
+top_genes <- names(sort(gene_variances, decreasing = TRUE)[1:5])
+
+expr_long <- melt(cbind(final_data[, c("treatment", "cell_type")], norm_expr[, top_genes]),
+                  id.vars = c("treatment", "cell_type")) # this change in the shape of the data is very useful here, because visualization functions like ggplot2 work much better when the data is in long format
+
+
+ggplotly(
+  ggplot(expr_long, aes(x = treatment, y = value, fill = treatment,
+                        text = paste("Treatment:", treatment,
+                                     "<br>Cell type:", cell_type,
+                                     "<br>Gene:", variable,
+                                     "<br>Expression:", round(value, 2)))) +
+    geom_boxplot(alpha = 0.7) +
+    facet_wrap(~ variable, scales = "free_y") +
+    theme_minimal() +
+    labs(title = "Top 5 most variable genes (interactive)", y = "log2 expression", x = "Treatment"),
+  tooltip = "text"
+)
+
+```
+
+#### Expression of top variable genes interpretation
+
+To better understand which genes drive the differences observed in PCA, we plotted the expression of the top 5 most variable genes across treatments. We observe that some genes (e.g., ENSG00000274752.1 or ENSG00000110848.8) show clear differences between treatment groups, and this suggests treatment-specific regulation. This means that if a gene has a high expression with some treatment and low expression with some other treatment, the treatment in which it has a high expression activates that gene, and the other treatments do not. 
+
+This supports the PCA results, where treatment explained a large portion of the variability. We think that is important to include this type of gene-level expression plots, since it helps to connect the global patterns seen in PCA with specific biological signals.
+
+
+## QUESTION 3: tSNE representation
+
+###  {.tabset}
+
+#### tSNE on raw data
+```{r, cache=TRUE}
+
+# tSNE on raw data:
+tsne_df_raw <- run_tsne_with_metadata(expr_raw, final_data)
+plot_tsne_reduction(tsne_df_raw, title = "tSNE on raw data")
+plot_tsne_reduction(tsne_df_raw, title = "tSNE on raw data", shape_by = "replicate")
+
+```
+
+#### tSNE on normalized data
+
+```{r, cache=TRUE}
+
+# tSNE on normalized data:
+tsne_df_norm <- run_tsne_with_metadata(norm_expr, final_data)
+plot_tsne_reduction(tsne_df_norm, title = "tSNE on normalized data")
+
+plot_tsne_reduction(tsne_df_norm, title = "tSNE on normalized data", shape_by = "replicate")
+
+```
+
+
+
+
+
+
+## Interactive tSNE representation (normalized)
+
+```{r, cache=TRUE}
+
+# interactive tSNE plot (scaled data)
+tsne_plot <- ggplot(tsne_df_norm, aes(x = X1, y = X2, color = treatment, shape = replicate,
+                                        text = paste("Sample:", sample,
+                                                     "<br>Treatment:", treatment,
+                                                     "<br>Cell type:", cell_type))) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_shape_manual(values = c("rep1" = 3, "rep2" = 16, "rep3" = 12)) +
+  theme_minimal() +
+  labs(title = "Interactive tSNE (scaled data)", x = "tSNE-1", y = "tSNE-2")
+
+ggplotly(tsne_plot, tooltip = "text")
+
+
+```
+
+### tSNE interpretation:
+
+We applied tSNE to both raw and normalized gene expression data in order to visualize the structure of the dataset and assess whether normalization improves biological signal detection.
+
+First, we ran tSNE on the raw count matrix. Although some separation between treatment groups was visible, the overall structure was noisy and less defined. Replicates appeared more dispersed within their respective groups, especially for PMA and DMSO, suggesting that technical variability or batch effects might be present in the unnormalized data.
+
+Next, we performed normalization and scaling of the expression matrix before rerunning tSNE. This preprocessing improved the separation between treatment groups and enhanced the internal consistency of replicates. In the normalized tSNE plot, replicates clustered tightly within each treatment and cell type, indicating that normalization successfully reduced batch effects and highlighted biologically meaningful patterns.
+
+We did not observe strong outliers in the dataset, and all samples contributed to well-formed clusters.
+
+To explore possible associations between the tSNE dimensions and metadata, we evaluated the visual alignment of clusters with treatment and cell type. The tSNE axes reflect these metadata variables, as samples grouped according to treatment (DMSO, PMA, SAHA) and cell type (Jurkat, J-LatA2). However, unlike PCA, tSNE does not produce axes with interpretable linear relationships to the original data. For this reason, we did not perform any linear model on the tSNE coordinates. Instead, we did a visual inspection of clustering patterns, which clearly indicated that tSNE captured the main sources of biological variability in the dataset.
+
+In conclusion, the comparison between raw and normalized data confirms that preprocessing was essential for reducing technical variation and improving the interpretability of the dataset in the tSNE projection.
+
+## QUESTION 4: tSNE parameters
+
+```{r, cache=TRUE}
+
+# defining the values to test
+perplexities <- c(5, 30, 50)
+iterations <- c(200, 500, 1000)
+seeds <- c(21, 42, 99)
+
+# Varying Perplexity (5, 30, 50):
+
+# this tests different values of perplexity to compare local vs global structure
+
+perplexity_plots <- lapply(perplexities, function(p) {
+  run_and_plot_tsne(norm_expr, final_data, perplexity = p, title_suffix = paste("Perp =", p))
+})
+
+# Varying Iterations (200, 500, 1000):
+
+# this tests how many iterations are needed for good convergence
+
+iteration_plots <- lapply(iterations, function(i) {
+  run_and_plot_tsne(norm_expr, final_data, max_iter = i, title_suffix = paste("Iter =", i))
+})
+
+# Varying Seed (21, 42, 99):
+
+# this tests whether changing the seed affects the biological interpretation
+
+seed_plots <- lapply(seeds, function(s) {
+  run_and_plot_tsne(norm_expr, final_data, seed = s, title_suffix = paste("Seed =", s))
+})
+
+```
+
+### {.tabset}
+
+#### Perplexity plots
+
+```{r, cache=TRUE}
+ggarrange(plotlist = perplexity_plots, ncol = 3, common.legend = TRUE, legend = "right")
+```
+
+#### Iteration plots
+
+```{r, cache=TRUE}
+ggarrange(plotlist = iteration_plots, ncol = 3, common.legend = TRUE, legend = "right")
+
+```
+
+#### Seed plots
+
+```{r, cache=TRUE}
+
+ggarrange(plotlist = seed_plots, ncol = 3, common.legend = TRUE, legend = "right")
+
+```
+
+### tSNE parameters interpretation:
+
+When we used a low perplexity like 5, the groups were very clearly separated, but the overall shape of the plot looked a bit distorted. With perplexity 30, the structure was much clearer and the groups were still well defined, so this value gave us the best result. Perplexity 50 still showed clear separation between groups, but the clusters were more spread out internally, making the plot slightly harder to interpret. So, higher perplexity didn’t mix the groups, but it reduced the sharpness of the clusters.
+
+The number of iterations had a big impact on the result. With only 200 iterations, the algorithm didn’t have enough time to organize the data properly, so everything looked collapsed in one spot. At 500 iterations the result improved, but wasn’t perfect yet. When we used 1000 iterations, the groups were much clearer and well separated, showing that more iterations help tSNE reach a stable and meaningful structure.
+
+Changing the random seed didn’t affect how the samples were grouped, but it did change the overall layout of the plot. In all three cases, the treatment and cell type clusters were consistent, which means the results are stable. Using a fixed seed is useful to make sure the results can be repeated and compared easily, even if the plot looks slightly different.
+
+
+## QUESTION 5: Final interpretation
+
+```{r, cache=TRUE}
+
+pca_final_df <- run_pca_with_metadata(norm_expr, final_data, TRUE)
+
+tsne_final_df <- run_tsne_with_metadata(norm_expr, final_data, perplexity = 30, max_iter = 1000, seed = 42)
+
+# and this is to plot both with shared legend
+p_final_pca <- plot_pca_reduction(pca_final_df, title = "Final PCA on scaled data", shape_by = "replicate")
+p_final_tsne <- plot_tsne_reduction(tsne_final_df, title = "Final tSNE on scaled data", shape_by = "replicate")
+
+ggarrange(p_final_pca, p_final_tsne, ncol = 2, common.legend = TRUE, legend = "right")
+
+```
+
+### PCA and tSNE final interpretation:
+
+To finish the analysis, we compared the results of PCA and tSNE using the final dataset with relative normalization, log-transformation, and scaling. Both plots showed a very consistent structure, with clear separation between treatment groups (DMSO, PMA, SAHA) and tight clustering of replicates. This suggests that our normalization worked well and removed potential batch effects.
+
+In the PCA plot, most of the variation is explained by PC1, which clearly separates the three treatments. PC2 adds some extra structure that seems related to cell type. Replicates (represented by different shapes) are close to each other within each treatment, confirming technical consistency.
+
+The tSNE plot shows a very similar distribution, with the same separation between treatments and strong clustering by replicate and cell type. Since tSNE is non-linear, the layout is different, but the biological interpretation remains the same.
+
+Additionally, linear models confirmed that treatment has a highly significant effect on both PC2 (p-value < 1.39e-05) and especially PC1(p-value < 2e-16), while replicates and cell type also contribute but to a lesser extent. This validates our choice to color plots by treatment, as it is the most explanatory variable in the dataset.
+
+We didn’t detect any strong outliers in the dataset, and all samples formed well-defined clusters.
+
+In conclusion, PCA and tSNE both captured the main biological structure of the dataset. They agree in separating treatments and grouping replicates, which gives us confidence in the quality of the data and the analysis.
+
+
+
+## QUESTION 6: UMAP interpretation
+
+### Raw counts {.tabset}
+
+#### By cell type
+```{r, cache=TRUE}
+
+umap_df_raw <- run_umap_with_metadata(expr_raw, final_data)
+plot_umap_reduction(umap_df_raw, title = "UMAP on raw counts (shape: cell type)", shape_by = "cell_type")
+
+```
+
+#### By replicate
+```{r, cache=TRUE}
+
+plot_umap_reduction(umap_df_raw, title = "UMAP (shape: replicate)", shape_by = "replicate")
+
+```
+
+
+### Normalized expression {.tabset}
+
+#### By cell type
+```{r, cache=TRUE}
+umap_df_scaled <- run_umap_with_metadata(norm_expr, final_data)
+plot_umap_reduction(umap_df_scaled, title = "UMAP on normalized expression (shape: cell type)", shape_by = "cell_type")
+
+```
+
+#### By replicate
+```{r, cache=TRUE}
+
+plot_umap_reduction(umap_df_scaled, title = "UMAP on normalized data (shape: replicate)", shape_by = "replicate")
+
+```
+
+#### Linear model summary
+```{r, cache=TRUE}
+
+summary(lm(UMAP1~replicate, umap_df_scaled))
+
+```
+
+### UMAP interpretation
+
+We applied UMAP to both the raw count data and the normalized expression data to evaluate how preprocessing affects dimensionality reduction outcomes.
+
+UMAP on raw counts showed a strong and well-defined separation between treatment groups (DMSO, PMA, SAHA). Clusters appeared tight, but some internal variability was noticeable, especially within the same treatment group. This suggests that while the treatment effect is visible, technical artifacts or differences in sequencing depth might still be influencing the layout, as raw counts often contain large-scale variance due to technical factors.
+
+When using cell type as shape, UMAP clearly separated Jurkat and J-LatA2 samples within each treatment. However, the separation was not as compact, and some internal variability was noticeable within treatments, particularly for PMA and DMSO, where replicates from the same treatment show slight shifts. This could reflect subtle biological differences between replicates or technical noise in raw counts.
+
+After normalization, the biological structure became clearer. The treatment groups were sharply separated, and clusters were more symmetric and biologically interpretable. Using cell type as shape, J-LatA2 and Jurkat remained well distinguished, and the layout showed reduced noise, especially within groups.
+
+When switching to replicate as shape, the clusters remained intact and replicates were consistently grouped within their corresponding treatment clusters. The layout was clean and interpretable, suggesting that technical batch effects were effectively mitigated by the normalization.
+
+To support this, we fit a linear model testing whether the UMAP1 coordinate could be explained by the replicate variable (lm(UMAP1 ~ replicate)). The result showed no significant effect (p = 0.5469), confirming that replicate does not introduce systematic variation in the UMAP space after normalization.
+
+No strong outliers were detected in either representation. All points clustered within the expected biological conditions.
+
+
+#### QUESTION 7: Predict the data
+
+```{r, cache=TRUE}
+
+# this sets a seed to make the sampling reproducible
+set.seed(42)
+
+# this randomly selects 80% of the rows for training
+sample_indices <- sample(1:nrow(norm_expr), size = 0.8 * nrow(norm_expr))
+
+# this creates the training expression matrix (80%)
+expr_train <- norm_expr[sample_indices, ]
+
+# this creates the test expression matrix (20%)
+expr_test <- norm_expr[-sample_indices, ]
+
+# this splits the metadata to match the training samples
+metadata_train <- final_data[sample_indices, ]
+
+# this splits the metadata to match the test samples
+metadata_test <- final_data[-sample_indices, ]
+
+# this runs UMAP on the training data and projects the test samples into the learned space
+umap_prediction_df <- project_umap(expr_train, expr_test, metadata_train, metadata_test)
+
+# this is the plot that shows both training and test samples
+# training samples are circles, test samples are crosses
+plot_umap_reduction(umap_prediction_df, title = "UMAP projection: train vs. predicted test samples", shape_by = "set")
+
+```
+### UMAP projection interpretation:
+
+We trained a UMAP model on 80% of the dataset and used it to project the remaining 20%. In the resulting plot, training samples are shown as circles and projected test samples as crosses. The predicted test points closely followed the structure learned from the training set, clearly preserving the treatment-based clusters (DMSO, PMA, and SAHA).
+
+This tight alignment between test and train embeddings indicates that the UMAP model generalized well to unseen samples. No test samples appeared as outliers or were projected into unexpected regions, further confirming the robustness of the learned manifold.
+
+The preservation of biological grouping — especially the distinct separation between SAHA, PMA, and DMSO — suggests that the dimensionality reduction learned meaningful structure from the gene expression data. This validates the stability of the UMAP embedding and supports its use for generalization and downstream interpretation.
+
+
+
+### QUESTION #8: UMAP Exploration parameters {.tabset}
+
+```{r prepare_umap_plots, cache=TRUE}
+
+# to test different values of number of neighbors
+neighbor_values <- c(5, 15, 50)
+neighbor_plots <- lapply(neighbor_values, function(k) {
+  run_and_plot_umap(norm_expr, final_data, n_neighbors = k, title_suffix = paste("neighbors =", k), shape_by = "replicate")
+})
+
+# to test different values of min_dist
+min_dist_values <- c(0.001, 0.1, 0.5)
+mindist_plots <- lapply(min_dist_values, function(d) {
+  run_and_plot_umap(norm_expr, final_data, min_dist = d, title_suffix = paste("min_dist =", d), shape_by = "replicate")
+})
+
+# to test different distance metrics
+metrics <- c("euclidean", "manhattan", "cosine")
+metric_plots <- lapply(metrics, function(m) {
+  run_and_plot_umap(norm_expr, final_data, metric = m, title_suffix = paste("metric =", m), shape_by = "replicate")
+})
+
+```
+
+#### Number of Neighbors
+```{r, cache=TRUE}
+
+neighbor_plots[[1]]  # neighbors = 5
+neighbor_plots[[2]]  # neighbors = 15
+neighbor_plots[[3]]  # neighbors = 50
+
+```
+
+#### Minimum Distance
+```{r, cache=TRUE}
+
+mindist_plots[[1]]  # min_dist = 0.001
+mindist_plots[[2]]  # min_dist = 0.1
+mindist_plots[[3]]  # min_dist = 0.5
+
+```
+
+#### Distance Metrics
+```{r, cache=TRUE}
+
+metric_plots[[1]]  # metric = euclidean
+metric_plots[[2]]  # metric = manhattan
+metric_plots[[3]]  # metric = cosine
+
+```
+
+
+### UMAP Parameter Exploration – Interpretation
+
+We explored how UMAP’s key parameters (n_neighbors, min_dist, and metric) affect the projection of the gene expression data and the biological interpretability of sample clustering.
+
+Number of Neighbors (n_neighbors):
+
+-	With k = 5, UMAP revealed sharp and compact local clusters, but the overall structure appeared fragmented. For example, PMA and DMSO formed two disjoint subclusters each, with some replicate separation inside treatments. This setting emphasizes local relationships but distorts the global geometry.
+	
+-	With k = 15 (default), treatment clusters became more coherent and better defined. Replicates within each group showed more consistency, and the overall layout was biologically meaningful. This value provided a good trade-off between local and global structure.
+
+-	With k = 50, treatment clusters (especially SAHA and PMA) were clearly separated and well aligned. However, within-cluster structure was more compressed, and finer patterns among replicates were slightly lost. This suggests a prioritization of global coherence over local detail.
+
+Minimum Distance (min_dist):
+
+-	A very small value (min_dist = 0.001) produced extremely compact clusters, making group boundaries sharp. While this helps highlight strong treatment separation, it can exaggerate distances between clusters and potentially distort global relationships.
+
+-	min_dist = 0.1 offered a well-balanced layout. It preserved compact clusters and maintained reasonable inter-cluster distances, enabling better interpretation of both treatment and replicate effects.
+
+-	At min_dist = 0.5, clusters appeared more spread out and partially overlapped. Replicates within treatments were still cohesive, but some visual separation was lost, reducing interpretability of distinct biological groups.
+
+Distance Metric (metric):
+
+-	Using euclidean distance yielded a familiar layout, similar to PCA, with clear treatment separation and tight replicates, but not the sharpest boundaries.
+
+-	manhattan distance enhanced the delineation of clusters, especially in SAHA and PMA. It provided slightly better replicate consistency and clearer inter-group margins than euclidean.
+
+- cosine distance showed the best overall performance: DMSO, PMA, and SAHA formed three highly distinct, compact, and stable clusters. This metric captured the biological structure most effectively and minimized overlap or replicate variability.
+
+To sum up, the most biologically meaningful and technically robust UMAP embedding was achieved with: n_neighbors = 50, min_dist = 0.1, and metric = "cosine"
+
+This configuration provided strong treatment-based separation while preserving replicate consistency and minimizing technical noise. In contrast, very low n_neighbors or high min_dist reduced cluster clarity. The choice of distance metric had a substantial impact, with cosine clearly outperforming euclidean and manhattan in this dataset.
+
+To evaluate technical consistency, we encoded replicates as shapes, which revealed that most parameter settings preserved within-treatment coherence across replicates. This supports the robustness of the embeddings and confirms that treatment is the dominant source of variation.
+
+
+### Interactive UMAP plot with optimized parameters
+
+```{r, cache=TRUE}
+
+# this is to re-run UMAP with best parameter combination based on the previous exploration
+umap_best <- run_umap_with_metadata(norm_expr, final_data,
+                                    n_neighbors = 50,
+                                    min_dist = 0.1,
+                                    metric = "cosine")
+
+# to plot it with shapes by replicate
+umap_plot_interactive <- ggplot(umap_best, aes(x = UMAP1, y = UMAP2, color = treatment, shape = replicate,
+                                               text = paste("Sample:", sample,
+                                                            "<br>Treatment:", treatment,
+                                                            "<br>Cell type:", cell_type,
+                                                            "<br>Replicate:", replicate))) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_shape_manual(values = c("rep1" = 3, "rep2" = 16, "rep3" = 12)) +
+  theme_minimal() +
+  labs(title = "Interactive UMAP with Optimized Parameters", x = "UMAP1", y = "UMAP2")
+
+ggplotly(umap_plot_interactive, tooltip = "text")
+
+```
+
+### UMAP optimized interpretation:
+
+Using the optimal combination of parameters derived from our previous exploration, UMAP reveals highly distinct treatment clusters (DMSO, PMA, SAHA) with minimal overlap. This version preserves both global structure and local detail better than the default settings. The internal consistency of replicates is also strong, suggesting high biological coherence.
+
+This optimized UMAP plot supports our previous findings and gives additional confidence in the robustness of dimensionality reduction when appropriate parameters are selected. 
+
+
+### QUESTION 9: Final interpretation: PCA vs. tSNE vs. UMAP {.tabset}
+
+```{r final_plots_setup, include=FALSE}
+
+# to run final projections
+pca_final <- run_pca_with_metadata(norm_expr, final_data, TRUE)
+tsne_final <- run_tsne_with_metadata(norm_expr, final_data, perplexity = 30, max_iter = 1000)
+umap_final <- run_umap_with_metadata(norm_expr, final_data, n_neighbors = 50, min_dist = 0.1, metric = "cosine") # to run it with the best parameter values we saw for our dataset
+
+# to create plots - by cell type
+plot_pca_cell_type <- plot_dimred(pca_final, x = "PC1", y = "PC2", title = "Final PCA (shape: cell type)", shape_by = "cell_type")
+plot_tsne_cell_type <- plot_dimred(tsne_final, x = "X1", y = "X2", title = "Final tSNE (shape: cell type)", shape_by = "cell_type")
+plot_umap_cell_type <- plot_dimred(umap_final, x = "UMAP1", y = "UMAP2", title = "Final UMAP (shape: cell type)", shape_by = "cell_type")
+
+# to create plots - by replicate
+plot_pca_replicate <- plot_dimred(pca_final, x = "PC1", y = "PC2", title = "Final PCA (shape: replicate)", shape_by = "replicate")
+plot_tsne_replicate <- plot_dimred(tsne_final, x = "X1", y = "X2", title = "Final tSNE (shape: replicate)", shape_by = "replicate")
+plot_umap_replicate <- plot_dimred(umap_final, x = "UMAP1", y = "UMAP2", title = "Final UMAP (shape: replicate)", shape_by = "replicate")
+
+```
+
+#### PCA (by cell type)
+```{r, cache=TRUE}
+plot_pca_cell_type
+
+```
+
+#### tSNE (by cell type)
+```{r, cache=TRUE}
+plot_tsne_cell_type
+
+```
+
+#### UMAP (by cell type)
+```{r, cache=TRUE}
+plot_umap_cell_type
+
+```
+
+#### PCA (by replicate)
+```{r, cache=TRUE}
+plot_pca_replicate
+
+```
+
+#### tSNE (by replicate)
+```{r, cache=TRUE}
+plot_tsne_replicate
+
+```
+
+#### UMAP (by replicate)
+```{r, cache=TRUE}
+plot_umap_replicate
+
+```
+
+### Final interpretation: PCA vs. tSNE vs. UMAP
+
+To conclude our exploratory analysis, we compared the results of PCA, tSNE, and UMAP using the final normalized and scaled dataset. We visualized the projections using the most relevant metadata variables: treatment (DMSO, PMA, SAHA), cell type (J-LatA2, Jurkat), and technical replicate (rep1, rep2, rep3). All three techniques captured meaningful biological variation, but they differ in the type of structure they reveal:
+
+-	PCA revealed a clear linear separation of the three treatment groups. PC1 mostly separated SAHA from the rest, while PC2 added additional separation between DMSO and PMA. Interestingly, DMSO and PMA appeared relatively closer in PCA space, suggesting a greater similarity between these two treatments compared to SAHA, which consistently formed a distinct cluster. Clusters were compact and well aligned with both treatment and cell type, suggesting strong global trends. When visualized by replicate, samples from the same condition but different replicates clustered tightly, indicating that normalization effectively removed batch effects.
+	
+-	tSNE revealed more detailed local structure, with well-separated and compact clusters for each treatment. Replicates were tightly grouped, confirming high internal consistency. The method preserved the separation between treatments and also highlighted substructures within treatments, indicating heterogeneity within each group. This supports the idea that tSNE excels at preserving local neighborhoods while minimizing technical noise.
+	
+-	UMAP, using optimized parameters also captured clear biological groupings. Treatment groups were sharply separated, especially SAHA, which formed a well-defined and isolated cluster. PMA and DMSO were still distinguishable but appeared closer to each other, especially in the UMAP1 axis, which may reflect their more similar biological effect compared to SAHA. Cell types remained clearly separated within each treatment. Replicates clustered consistently, with minimal dispersion, confirming technical stability. Compared to PCA and tSNE, UMAP provided a balanced compromise between local and global structure, though its layout was slightly more sensitive to parameter tuning.
+
+We did not observe any strong outliers in any of the three methods. All samples were embedded within reasonable distances of their respective groups, with no consistent deviations across plots.
+
+To summarize:
+
+-	PCA is most useful for summarizing global trends and detecting batch effects.
+-	tSNE is ideal for revealing local structures and treatment-level heterogeneity.
+-	UMAP, when properly tuned, offers a versatile view that combines global separation and replicate consistency.
+
+All three methods led to consistent biological conclusions: treatment is the dominant source of variation, followed by cell type. Technical replicates were stable across all methods, validating the effectiveness of our preprocessing pipeline. Therefore, these results provide a solid foundation for downstream differential expression analysis.
+
+
+
+
+
+
+
