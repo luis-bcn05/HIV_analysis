@@ -9,11 +9,11 @@ We apply two widely used dimensionality reduction techniques in computational bi
 
 The dataset includes gene expression profiles under the following conditions:
 
-    Treatment groups: SAHA, PMA, and DMSO
+- Treatment groups: SAHA, PMA, and DMSO
 
-    Infection status: HIV-infected vs non-infected
+- Infection status: HIV-infected vs non-infected
 
-    Replicates and potential batch differences
+- Replicates and potential batch differences
 
 This data allows us to explore how latent HIV reservoirs might be reactivated through epigenetic modulators like SAHA, which is of particular interest in HIV cure research.
 
