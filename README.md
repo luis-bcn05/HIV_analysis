@@ -19,47 +19,45 @@ This data allows us to explore how latent HIV reservoirs might be reactivated th
 
 🧠 Goals
 
-    Visualize the major sources of variation across samples using PCA
+- Visualize the major sources of variation across samples using PCA
 
-    Identify clusters or separation patterns between treatment and infection groups
+- Identify clusters or separation patterns between treatment and infection groups
 
-    Explore whether there are batch effects that need to be addressed before downstream analysis
+- Explore whether there are batch effects that need to be addressed before downstream analysis
 
-    Practice applying dimensionality reduction techniques in R with real biological data
+- Practice applying dimensionality reduction techniques in R with real biological data
 
-    Build a foundation for future differential expression analysis using tools like DESeq2 or edgeR
+- Build a foundation for future differential expression analysis using tools like DESeq2 or edgeR
 
 ⚙️ Methods & Tools
 
 The project was developed entirely in R, using the following key libraries:
 
-    ggplot2 – data visualization
+- ggplot2 – data visualization
 
-    Rtsne – t-SNE dimensionality reduction
+- Rtsne – t-SNE dimensionality reduction
 
-    dplyr – data manipulation
+- dplyr – data manipulation
 
-    DESeq2 – normalization and exploratory analysis (optional/future use)
-
-    readr, tibble – data loading and wrangling
+- readr, tibble – data loading and wrangling
 
 ✨ Techniques applied:
 
-    Principal Component Analysis (PCA) to detect variance structure in the gene expression matrix
+- Principal Component Analysis (PCA) to detect variance structure in the gene expression matrix
 
-    t-SNE to capture local sample relationships in a non-linear manner
+- t-SNE to capture local sample relationships in a non-linear manner
 
-    Data cleaning and preprocessing steps (filtering, normalization, etc.)
+- Data cleaning and preprocessing steps (filtering, normalization, etc.)
 
-    Color-coded plots by infection status, treatment group, and replicate batch
+- Color-coded plots by infection status, treatment group, and replicate batch
 
 👥 Authors
 
-    Luis Carlos Ospina 
+- Luis Carlos Ospina 
 
-    Pau Ribera 
+- Pau Ribera 
 
-    Nicolás Costa
+- Nicolás Costa
 
 Project completed as part of coursework in the Bioinformatics Bachelor's Degree at the Polytechnic University of Catalonia (UPC), focusing on transcriptomic analysis and dimensionality reduction.
 
@@ -67,11 +65,11 @@ Project completed as part of coursework in the Bioinformatics Bachelor's Degree 
 
 Preliminary visualizations suggest that:
 
-    Treatment effects (especially PMA and SAHA) generate distinguishable expression patterns
+- Treatment effects (especially PMA and SAHA) generate distinguishable expression patterns
 
-    Some degree of clustering based on HIV infection status is observable
+- Some degree of clustering based on HIV infection status is observable
 
-    Potential batch effects may influence separation in t-SNE plots, warranting normalization or batch correction in downstream steps
+- Potential batch effects may influence separation in t-SNE plots, warranting normalization or batch correction in downstream steps
 
 Note: these observations are exploratory and should be confirmed via formal statistical testing in a future pipeline.
 
